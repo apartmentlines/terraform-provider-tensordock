@@ -262,8 +262,8 @@ func TestClientListHostnodesDecodesResponse(t *testing.T) {
 							"stateprovince": "VA",
 							"country": "USA",
 							"has_network_storage": true,
-							"network_speed_gbps": 10,
-							"network_speed_upload_gbps": 10,
+							"network_speed_gbps": 2.5,
+							"network_speed_upload_gbps": 10.5,
 							"organization": "org",
 							"organizationName": "Org",
 							"tier": 1
@@ -290,6 +290,9 @@ func TestClientListHostnodesDecodesResponse(t *testing.T) {
 	}
 	if got := hostnodes[0].AvailableResources.GPUs[0].V0Name; got != "teslav100-pcie-16gb" {
 		t.Fatalf("unexpected hostnode GPU name: %q", got)
+	}
+	if got := hostnodes[0].Location.NetworkSpeedGbps; got != 2.5 {
+		t.Fatalf("unexpected network speed: %v", got)
 	}
 }
 

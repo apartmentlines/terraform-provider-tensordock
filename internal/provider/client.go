@@ -133,8 +133,8 @@ type HostnodeLocation struct {
 	StateProvince          string `json:"stateprovince"`
 	Country                string `json:"country"`
 	HasNetworkStorage      bool   `json:"has_network_storage"`
-	NetworkSpeedGbps       int64  `json:"network_speed_gbps"`
-	NetworkSpeedUploadGbps int64  `json:"network_speed_upload_gbps"`
+	NetworkSpeedGbps       float64 `json:"network_speed_gbps"`
+	NetworkSpeedUploadGbps float64 `json:"network_speed_upload_gbps"`
 	Organization           string `json:"organization"`
 	OrganizationName       string `json:"organizationName"`
 	Tier                   int64  `json:"tier"`
