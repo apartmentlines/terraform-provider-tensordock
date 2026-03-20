@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -17,6 +18,7 @@ import (
 var (
 	_ resource.Resource                = &SecretResource{}
 	_ resource.ResourceWithImportState = &SecretResource{}
+	_ resource.ResourceWithModifyPlan  = &SecretResource{}
 )
 
 func NewSecretResource() resource.Resource {
@@ -28,10 +30,11 @@ type SecretResource struct {
 }
 
 type SecretResourceModel struct {
-	ID    types.String `tfsdk:"id"`
-	Name  types.String `tfsdk:"name"`
-	Type  types.String `tfsdk:"type"`
-	Value types.String `tfsdk:"value"`
+	ID             types.String `tfsdk:"id"`
+	Name           types.String `tfsdk:"name"`
+	Type           types.String `tfsdk:"type"`
+	ValueWO        types.String `tfsdk:"value_wo"`
+	ValueWOVersion types.Int64  `tfsdk:"value_wo_version"`
 }
 
 func (r *SecretResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -65,14 +68,19 @@ func (r *SecretResource) Schema(_ context.Context, _ resource.SchemaRequest, res
 					stringplanmodifier.RequiresReplace(),
 				},
 			},
-			"value": schema.StringAttribute{
+			"value_wo": schema.StringAttribute{
 				MarkdownDescription: "Sensitive secret value used during creation or replacement. This attribute is write-only and is not stored in Terraform state.",
 				Optional:            true,
 				Sensitive:           true,
 				WriteOnly:           true,
 				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.RequiresReplace(),
+					stringplanmodifier.UseStateForUnknown(),
 				},
+			},
+			"value_wo_version": schema.Int64Attribute{
+				MarkdownDescription: "Version token that Terraform persists to detect secret rotation. Increment this value whenever `value_wo` changes.",
+				Optional:            true,
+				Computed:            true,
 			},
 		},
 	}
@@ -97,25 +105,23 @@ func (r *SecretResource) Configure(_ context.Context, req resource.ConfigureRequ
 
 func (r *SecretResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
 	var plan SecretResourceModel
+	var valueWO types.String
 
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("value_wo"), &valueWO)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
 	name := strings.TrimSpace(plan.Name.ValueString())
 	secretType := strings.TrimSpace(plan.Type.ValueString())
-	value := plan.Value.ValueString()
+	value := strings.TrimSpace(valueWO.ValueString())
 
-	if name == "" {
-		resp.Diagnostics.AddError("Missing secret name", "`name` must be supplied when creating a TensorDock secret.")
-	}
-	if secretType == "" {
-		resp.Diagnostics.AddError("Missing secret type", "`type` must be supplied when creating a TensorDock secret.")
-	}
-	if value == "" {
-		resp.Diagnostics.AddError("Missing secret value", "`value` must be supplied when creating a TensorDock secret.")
-	}
+	resp.Diagnostics.Append(validateSecretPlan(plan, value)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -127,9 +133,11 @@ func (r *SecretResource) Create(ctx context.Context, req resource.CreateRequest,
 	}
 
 	state := SecretResourceModel{
-		ID:   types.StringValue(created.ID),
-		Name: types.StringValue(created.Name),
-		Type: types.StringValue(created.Type),
+		ID:             types.StringValue(created.ID),
+		Name:           types.StringValue(created.Name),
+		Type:           types.StringValue(created.Type),
+		ValueWO:        types.StringNull(),
+		ValueWOVersion: plan.ValueWOVersion,
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
@@ -157,7 +165,7 @@ func (r *SecretResource) Read(ctx context.Context, req resource.ReadRequest, res
 	state.ID = types.StringValue(remote.ID)
 	state.Name = types.StringValue(remote.Name)
 	state.Type = types.StringValue(remote.Type)
-	state.Value = types.StringNull()
+	state.ValueWO = types.StringNull()
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
@@ -170,7 +178,7 @@ func (r *SecretResource) Update(ctx context.Context, req resource.UpdateRequest,
 		return
 	}
 
-	plan.Value = types.StringNull()
+	plan.ValueWO = types.StringNull()
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
@@ -190,4 +198,75 @@ func (r *SecretResource) Delete(ctx context.Context, req resource.DeleteRequest,
 
 func (r *SecretResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
+}
+
+func (r *SecretResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
+	if req.Plan.Raw.IsNull() {
+		return
+	}
+
+	var plan SecretResourceModel
+	var valueWO types.String
+
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("value_wo"), &valueWO)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	if req.State.Raw.IsNull() {
+		plan = normalizeSecretCreatePlan(plan, valueWO)
+		resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
+		return
+	}
+
+	var state SecretResourceModel
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
+	resp.RequiresReplace = requiresReplaceSecretValueRotation(plan, state, valueWO)
+}
+
+func validateSecretPlan(plan SecretResourceModel, value string) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	name := strings.TrimSpace(plan.Name.ValueString())
+	secretType := strings.TrimSpace(plan.Type.ValueString())
+
+	if name == "" {
+		diags.AddError("Missing secret name", "`name` must be supplied when creating a TensorDock secret.")
+	}
+	if secretType == "" {
+		diags.AddError("Missing secret type", "`type` must be supplied when creating a TensorDock secret.")
+	}
+	if value == "" {
+		diags.AddError("Missing secret value", "`value_wo` must be supplied when creating a TensorDock secret.")
+	}
+
+	return diags
+}
+
+func normalizeSecretCreatePlan(plan SecretResourceModel, valueWO types.String) SecretResourceModel {
+	hasValueInput := !valueWO.IsNull() && !valueWO.IsUnknown() && strings.TrimSpace(valueWO.ValueString()) != ""
+
+	if hasValueInput && (plan.ValueWOVersion.IsNull() || plan.ValueWOVersion.IsUnknown()) {
+		plan.ValueWOVersion = types.Int64Value(1)
+	}
+
+	return plan
+}
+
+func requiresReplaceSecretValueRotation(plan, state SecretResourceModel, valueWO types.String) path.Paths {
+	hasExistingState := !state.ID.IsNull() && !state.ID.IsUnknown() && strings.TrimSpace(state.ID.ValueString()) != ""
+	hasValueInput := !valueWO.IsNull() && !valueWO.IsUnknown() && strings.TrimSpace(valueWO.ValueString()) != ""
+	versionChanged := !plan.ValueWOVersion.Equal(state.ValueWOVersion)
+
+	if hasExistingState && hasValueInput && versionChanged {
+		return path.Paths{path.Root("value_wo_version")}
+	}
+
+	return nil
 }

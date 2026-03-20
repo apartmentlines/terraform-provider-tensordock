@@ -17,8 +17,10 @@ terraform {
 }
 
 resource "tensordock_secret" "deploy_key" {
-  name = "deploy-key"
-  type = "SSHKEY"
+  name             = "deploy-key"
+  type             = "SSHKEY"
+  value_wo         = file("~/.ssh/id_ed25519.pub")
+  value_wo_version = 1
 }
 
 ephemeral "tensordock_secret_value" "deploy_key" {

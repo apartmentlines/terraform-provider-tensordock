@@ -13,9 +13,10 @@ Manages a TensorDock secret using the public secrets API.
 
 ```terraform
 resource "tensordock_secret" "deploy_key" {
-  name  = "deploy-key"
-  type  = "ssh"
-  value = file("~/.ssh/id_ed25519")
+  name             = "deploy-key"
+  type             = "ssh"
+  value_wo         = file("~/.ssh/id_ed25519")
+  value_wo_version = 1
 }
 ```
 
@@ -23,7 +24,8 @@ resource "tensordock_secret" "deploy_key" {
 
 - `name` (String) Secret name.
 - `type` (String) Secret type.
-- `value` (String, Sensitive) Secret value used during creation or replacement.
+- `value_wo` (String, Sensitive) Secret value used during creation or replacement. This attribute is write-only and is not stored in Terraform state.
+- `value_wo_version` (Number) Rotation trigger that Terraform persists. Increment this value whenever `value_wo` changes.
 
 ## Attributes Reference
 
@@ -37,4 +39,4 @@ Import is supported with the TensorDock secret ID:
 terraform import tensordock_secret.example <secret-id>
 ```
 
-`value` is write-only and is not recovered during import or refresh.
+`value_wo` is write-only and is not recovered during import or refresh. Terraform relies on `value_wo_version` to detect rotations.

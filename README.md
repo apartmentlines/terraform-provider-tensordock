@@ -34,7 +34,7 @@ The implementation follows the public TensorDock v2 API surface verified from th
 
 - **Some instance create-time fields are replace-only.** `image`, `location_id`, `hostnode_id`, `use_dedicated_ip`, `port_forwards`, `ssh_public_key`, and `cloud_init_json` are treated as replacement triggers because the public instance management API does not document in-place mutation for them.
 - **Drift visibility is partial for create-only fields.** The documented `GET /instances/{id}` response returns current runtime attributes such as status, IP, resources, port forwards, and hourly rate, but it does not document returning `image`, `location_id`, SSH key injection state, or cloud-init payload. Those fields remain stored in Terraform state but cannot be fully re-read from the public API.
-- **Secret values are management-only.** `tensordock_secret.value` is write-only and is never stored in Terraform state, including after creation or import.
+- **Secret values are management-only.** `tensordock_secret.value_wo` is write-only and is never stored in Terraform state, including after creation or import. Increment `value_wo_version` whenever the secret changes.
 - **Ephemeral secret values require Terraform 1.11+.** `tensordock_secret_value` and the write-only `ssh_public_key` flow rely on Terraform `>= 1.11.0`.
 
 ## Provider configuration
@@ -96,9 +96,10 @@ resource "tensordock_instance" "gpu_worker" {
 }
 
 resource "tensordock_secret" "deploy_key" {
-  name  = "deploy-key"
-  type  = "ssh"
-  value = file("~/.ssh/id_ed25519")
+  name             = "deploy-key"
+  type             = "ssh"
+  value_wo         = file("~/.ssh/id_ed25519")
+  value_wo_version = 1
 }
 
 ephemeral "tensordock_secret_value" "deploy_key" {
