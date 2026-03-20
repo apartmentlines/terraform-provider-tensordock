@@ -34,7 +34,7 @@ func NewClient(rawBaseURL, apiToken, version string) (*Client, error) {
 
 	userAgent := "terraform-provider-tensordock"
 	if strings.TrimSpace(version) != "" {
-		userAgent = userAgent + "/" + strings.TrimSpace(version)
+		userAgent += "/" + strings.TrimSpace(version)
 	}
 
 	return &Client{
@@ -51,12 +51,14 @@ type CreateInstanceInput struct {
 	Name           string
 	Image          string
 	LocationID     string
+	HostnodeID     string
 	VCPUCount      int64
 	RAMGB          int64
 	StorageGB      int64
 	GPUType        string
 	GPUCount       int64
 	UseDedicatedIP bool
+	PortForwards   []PortForward
 	SSHPublicKey   string
 	CloudInit      map[string]any
 }
@@ -67,6 +69,99 @@ type ModifyInstanceInput struct {
 	StorageGB int64
 	GPUType   string
 	GPUCount  int64
+}
+
+type SecretSummary struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Type string `json:"type"`
+}
+
+type Secret struct {
+	ID    string `json:"id"`
+	Name  string `json:"name"`
+	Type  string `json:"type"`
+	Value string `json:"value,omitempty"`
+}
+
+type ResourceLimits struct {
+	MaxVCPUs     int64 `json:"max_vcpus"`
+	MaxRAMGB     int64 `json:"max_ram_gb"`
+	MaxStorageGB int64 `json:"max_storage_gb"`
+}
+
+type Pricing struct {
+	PerVCPUHR      float64 `json:"per_vcpu_hr"`
+	PerGBRAMHR     float64 `json:"per_gb_ram_hr"`
+	PerGBStorageHR float64 `json:"per_gb_storage_hr"`
+}
+
+type NetworkFeatures struct {
+	DedicatedIPAvailable   bool `json:"dedicated_ip_available"`
+	PortForwardingAvailble bool `json:"port_forwarding_available"`
+	NetworkStorageAvailble bool `json:"network_storage_available"`
+}
+
+type LocationGPU struct {
+	V0Name      string          `json:"v0Name"`
+	DisplayName string          `json:"displayName"`
+	MaxCount    int64           `json:"max_count"`
+	PricePerHR  float64         `json:"price_per_hr"`
+	Resources   ResourceLimits  `json:"resources"`
+	Pricing     Pricing         `json:"pricing"`
+	Network     NetworkFeatures `json:"network_features"`
+}
+
+type Location struct {
+	ID            string        `json:"id"`
+	City          string        `json:"city"`
+	StateProvince string        `json:"stateprovince"`
+	Country       string        `json:"country"`
+	Tier          int64         `json:"tier"`
+	GPUs          []LocationGPU `json:"gpus"`
+}
+
+type HostnodeGPU struct {
+	V0Name         string  `json:"v0Name"`
+	AvailableCount int64   `json:"availableCount"`
+	PricePerHR     float64 `json:"price_per_hr"`
+}
+
+type HostnodeLocation struct {
+	UUID                   string `json:"uuid"`
+	City                   string `json:"city"`
+	StateProvince          string `json:"stateprovince"`
+	Country                string `json:"country"`
+	HasNetworkStorage      bool   `json:"has_network_storage"`
+	NetworkSpeedGbps       int64  `json:"network_speed_gbps"`
+	NetworkSpeedUploadGbps int64  `json:"network_speed_upload_gbps"`
+	Organization           string `json:"organization"`
+	OrganizationName       string `json:"organizationName"`
+	Tier                   int64  `json:"tier"`
+}
+
+type HostnodeAvailableResources struct {
+	GPUs                 []HostnodeGPU `json:"gpus"`
+	VCPUCount            int64         `json:"vcpu_count,omitempty"`
+	RAMGB                int64         `json:"ram_gb,omitempty"`
+	StorageGB            int64         `json:"storage_gb,omitempty"`
+	MaxVCPUsPerGPU       int64         `json:"max_vcpus_per_gpu,omitempty"`
+	MaxRAMPerGPU         int64         `json:"max_ram_per_gpu,omitempty"`
+	MaxVCPUs             int64         `json:"max_vcpus,omitempty"`
+	MaxRAMGB             int64         `json:"max_ram_gb,omitempty"`
+	MaxStorageGB         int64         `json:"max_storage_gb,omitempty"`
+	AvailablePorts       []int64       `json:"available_ports,omitempty"`
+	HasPublicIPAvailable bool          `json:"has_public_ip_available"`
+}
+
+type Hostnode struct {
+	ID                 string                     `json:"id"`
+	LocationID         string                     `json:"location_id"`
+	Engine             string                     `json:"engine"`
+	UptimePercentage   float64                    `json:"uptime_percentage"`
+	AvailableResources HostnodeAvailableResources `json:"available_resources"`
+	Pricing            Pricing                    `json:"pricing"`
+	Location           HostnodeLocation           `json:"location"`
 }
 
 type Instance struct {
@@ -112,33 +207,180 @@ type rawInstance struct {
 	RateHourly   *float64                   `json:"rateHourly"`
 }
 
-func (c *Client) CreateInstance(ctx context.Context, input CreateInstanceInput) (Instance, error) {
+func (c *Client) ListSecrets(ctx context.Context) ([]SecretSummary, error) {
+	var resp struct {
+		Data struct {
+			Secrets []SecretSummary `json:"secrets"`
+		} `json:"data"`
+	}
+
+	body, err := c.doJSON(ctx, http.MethodGet, "/secrets", nil)
+	if err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("decode secrets response: %w", err)
+	}
+
+	return resp.Data.Secrets, nil
+}
+
+func (c *Client) CreateSecret(ctx context.Context, name, secretType, value string) (Secret, error) {
 	payload := map[string]any{
 		"data": map[string]any{
-			"type": "virtualmachine",
+			"type": "secret",
 			"attributes": map[string]any{
-				"name":  input.Name,
-				"type":  "virtualmachine",
-				"image": input.Image,
-				"resources": map[string]any{
-					"vcpu_count": input.VCPUCount,
-					"ram_gb":     input.RAMGB,
-					"storage_gb": input.StorageGB,
-					"gpus": map[string]any{
-						input.GPUType: map[string]any{
-							"count": input.GPUCount,
-						},
-					},
-				},
-				"location_id":    input.LocationID,
-				"useDedicatedIp": input.UseDedicatedIP,
-				"ssh_key":        input.SSHPublicKey,
+				"name":  name,
+				"type":  secretType,
+				"value": value,
 			},
 		},
 	}
 
+	body, err := c.doJSON(ctx, http.MethodPost, "/secrets", payload)
+	if err != nil {
+		return Secret{}, err
+	}
+
+	var resp struct {
+		Data Secret `json:"data"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return Secret{}, fmt.Errorf("decode create secret response: %w", err)
+	}
+	if resp.Data.ID == "" {
+		return Secret{}, fmt.Errorf("decode create secret response: missing secret ID")
+	}
+
+	return resp.Data, nil
+}
+
+func (c *Client) GetSecret(ctx context.Context, id string) (Secret, error) {
+	body, err := c.doJSON(ctx, http.MethodGet, "/secrets/"+id, nil)
+	if err != nil {
+		return Secret{}, err
+	}
+
+	var resp struct {
+		Data Secret `json:"data"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return Secret{}, fmt.Errorf("decode secret response: %w", err)
+	}
+	if resp.Data.ID == "" {
+		return Secret{}, fmt.Errorf("decode secret response: missing secret ID")
+	}
+
+	return resp.Data, nil
+}
+
+func (c *Client) DeleteSecret(ctx context.Context, id string) error {
+	_, err := c.doJSON(ctx, http.MethodDelete, "/secrets/"+id, nil)
+	if errors.Is(err, ErrNotFound) {
+		return nil
+	}
+
+	return err
+}
+
+func (c *Client) ListLocations(ctx context.Context) ([]Location, error) {
+	var resp struct {
+		Data struct {
+			Locations []Location `json:"locations"`
+		} `json:"data"`
+	}
+
+	body, err := c.doJSON(ctx, http.MethodGet, "/locations", nil)
+	if err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("decode locations response: %w", err)
+	}
+
+	return resp.Data.Locations, nil
+}
+
+func (c *Client) ListHostnodes(ctx context.Context) ([]Hostnode, error) {
+	var resp struct {
+		Data struct {
+			Hostnodes []Hostnode `json:"hostnodes"`
+		} `json:"data"`
+	}
+
+	body, err := c.doJSON(ctx, http.MethodGet, "/hostnodes", nil)
+	if err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("decode hostnodes response: %w", err)
+	}
+
+	return resp.Data.Hostnodes, nil
+}
+
+func (c *Client) GetHostnode(ctx context.Context, id string) (Hostnode, error) {
+	body, err := c.doJSON(ctx, http.MethodGet, "/hostnodes/"+id, nil)
+	if err != nil {
+		return Hostnode{}, err
+	}
+
+	var resp struct {
+		Data Hostnode `json:"data"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return Hostnode{}, fmt.Errorf("decode hostnode response: %w", err)
+	}
+	if resp.Data.ID == "" {
+		return Hostnode{}, fmt.Errorf("decode hostnode response: missing hostnode ID")
+	}
+
+	return resp.Data, nil
+}
+
+func (c *Client) CreateInstance(ctx context.Context, input CreateInstanceInput) (Instance, error) {
+	attributes := map[string]any{
+		"name":  input.Name,
+		"type":  "virtualmachine",
+		"image": input.Image,
+		"resources": map[string]any{
+			"vcpu_count": input.VCPUCount,
+			"ram_gb":     input.RAMGB,
+			"storage_gb": input.StorageGB,
+		},
+	}
+
+	if input.LocationID != "" {
+		attributes["location_id"] = input.LocationID
+	}
+	if input.HostnodeID != "" {
+		attributes["hostnode_id"] = input.HostnodeID
+	}
+	if input.UseDedicatedIP {
+		attributes["useDedicatedIp"] = true
+	}
+	if input.SSHPublicKey != "" {
+		attributes["ssh_key"] = input.SSHPublicKey
+	}
+	if len(input.PortForwards) > 0 {
+		attributes["port_forwards"] = input.PortForwards
+	}
 	if len(input.CloudInit) > 0 {
-		payload["data"].(map[string]any)["attributes"].(map[string]any)["cloud_init"] = input.CloudInit
+		attributes["cloud_init"] = input.CloudInit
+	}
+	if input.GPUType != "" && input.GPUCount > 0 {
+		attributes["resources"].(map[string]any)["gpus"] = map[string]any{
+			input.GPUType: map[string]any{
+				"count": input.GPUCount,
+			},
+		}
+	}
+
+	payload := map[string]any{
+		"data": map[string]any{
+			"type":       "virtualmachine",
+			"attributes": attributes,
+		},
 	}
 
 	body, err := c.doJSON(ctx, http.MethodPost, "/instances", payload)
@@ -157,7 +399,6 @@ func (c *Client) CreateInstance(ctx context.Context, input CreateInstanceInput) 
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return Instance{}, fmt.Errorf("decode create instance response: %w", err)
 	}
-
 	if resp.Data.ID == "" {
 		return Instance{}, fmt.Errorf("decode create instance response: missing instance ID")
 	}
@@ -203,14 +444,21 @@ func (c *Client) DeleteInstance(ctx context.Context, id string) error {
 }
 
 func (c *Client) ModifyInstance(ctx context.Context, id string, input ModifyInstanceInput) error {
-	payload := map[string]any{
-		"cpuCores": input.VCPUCount,
-		"ramGb":    input.RAMGB,
-		"diskGb":   input.StorageGB,
-		"gpus": map[string]any{
+	payload := map[string]any{}
+	if input.VCPUCount > 0 {
+		payload["cpuCores"] = input.VCPUCount
+	}
+	if input.RAMGB > 0 {
+		payload["ramGb"] = input.RAMGB
+	}
+	if input.StorageGB > 0 {
+		payload["diskGb"] = input.StorageGB
+	}
+	if input.GPUType != "" && input.GPUCount > 0 {
+		payload["gpus"] = map[string]any{
 			"gpuV0Name": input.GPUType,
 			"count":     input.GPUCount,
-		},
+		}
 	}
 
 	_, err := c.doJSON(ctx, http.MethodPut, "/instances/"+id+"/modify", payload)
@@ -304,7 +552,6 @@ func (c *Client) doJSON(ctx context.Context, method, endpoint string, payload an
 	if resp.StatusCode == http.StatusNotFound {
 		return nil, ErrNotFound
 	}
-
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, &apiError{StatusCode: resp.StatusCode, Body: strings.TrimSpace(string(body))}
 	}

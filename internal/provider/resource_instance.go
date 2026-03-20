@@ -5,10 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sort"
 	"strings"
 
-	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -34,24 +32,30 @@ type InstanceResource struct {
 	client *Client
 }
 
+type PortForwardModel struct {
+	InternalPort types.Int64 `tfsdk:"internal_port"`
+	ExternalPort types.Int64 `tfsdk:"external_port"`
+}
+
 type InstanceResourceModel struct {
 	ID             types.String  `tfsdk:"id"`
 	Name           types.String  `tfsdk:"name"`
 	Image          types.String  `tfsdk:"image"`
 	LocationID     types.String  `tfsdk:"location_id"`
+	HostnodeID     types.String  `tfsdk:"hostnode_id"`
 	VCPUCount      types.Int64   `tfsdk:"vcpu_count"`
 	RAMGB          types.Int64   `tfsdk:"ram_gb"`
 	StorageGB      types.Int64   `tfsdk:"storage_gb"`
 	GPUType        types.String  `tfsdk:"gpu_type"`
 	GPUCount       types.Int64   `tfsdk:"gpu_count"`
 	UseDedicatedIP types.Bool    `tfsdk:"use_dedicated_ip"`
+	PortForwards   types.List    `tfsdk:"port_forwards"`
 	SSHPublicKey   types.String  `tfsdk:"ssh_public_key"`
 	CloudInitJSON  types.String  `tfsdk:"cloud_init_json"`
 	PowerState     types.String  `tfsdk:"power_state"`
 	Status         types.String  `tfsdk:"status"`
 	IPAddress      types.String  `tfsdk:"ip_address"`
 	RateHourly     types.Float64 `tfsdk:"rate_hourly"`
-	PortForwards   types.List    `tfsdk:"port_forwards"`
 }
 
 func (r *InstanceResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -84,8 +88,15 @@ func (r *InstanceResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 				},
 			},
 			"location_id": schema.StringAttribute{
-				MarkdownDescription: "TensorDock location UUID used for location-based deployment.",
-				Required:            true,
+				MarkdownDescription: "TensorDock location UUID used for location-based deployment. Exactly one of `location_id` or `hostnode_id` must be set.",
+				Optional:            true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
+			},
+			"hostnode_id": schema.StringAttribute{
+				MarkdownDescription: "TensorDock hostnode UUID used for direct hostnode deployment. Exactly one of `location_id` or `hostnode_id` must be set.",
+				Optional:            true,
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
 				},
@@ -103,12 +114,12 @@ func (r *InstanceResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 				Required:            true,
 			},
 			"gpu_type": schema.StringAttribute{
-				MarkdownDescription: "TensorDock GPU model v0Name, for example `geforcertx4090-pcie-24gb`.",
-				Required:            true,
+				MarkdownDescription: "TensorDock GPU model v0Name, for example `geforcertx4090-pcie-24gb`. Required for location-based deployments.",
+				Optional:            true,
 			},
 			"gpu_count": schema.Int64Attribute{
-				MarkdownDescription: "Number of GPUs of `gpu_type`.",
-				Required:            true,
+				MarkdownDescription: "Number of GPUs of `gpu_type`. Required for location-based deployments.",
+				Optional:            true,
 			},
 			"use_dedicated_ip": schema.BoolAttribute{
 				MarkdownDescription: "Request a dedicated IP during instance creation. TensorDock documents this as a create-time field.",
@@ -119,9 +130,36 @@ func (r *InstanceResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 					boolplanmodifier.RequiresReplace(),
 				},
 			},
+			"port_forwards": schema.ListNestedAttribute{
+				MarkdownDescription: "Optional create-time port forward mappings. TensorDock also returns current port forwards on instance reads.",
+				Optional:            true,
+				Computed:            true,
+				PlanModifiers: []planmodifier.List{
+					listplanmodifier.UseStateForUnknown(),
+					listplanmodifier.RequiresReplace(),
+				},
+				NestedObject: schema.NestedAttributeObject{
+					Attributes: map[string]schema.Attribute{
+						"internal_port": schema.Int64Attribute{
+							MarkdownDescription: "Internal port on the virtual machine.",
+							Required:            true,
+							PlanModifiers: []planmodifier.Int64{
+								int64planmodifier.UseStateForUnknown(),
+							},
+						},
+						"external_port": schema.Int64Attribute{
+							MarkdownDescription: "Externally exposed port.",
+							Required:            true,
+							PlanModifiers: []planmodifier.Int64{
+								int64planmodifier.UseStateForUnknown(),
+							},
+						},
+					},
+				},
+			},
 			"ssh_public_key": schema.StringAttribute{
-				MarkdownDescription: "SSH public key injected during instance creation. TensorDock documents this as a create-time field.",
-				Required:            true,
+				MarkdownDescription: "SSH public key injected during instance creation. Required for non-Windows images.",
+				Optional:            true,
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
 				},
@@ -159,31 +197,6 @@ func (r *InstanceResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 				MarkdownDescription: "Hourly rate returned by TensorDock.",
 				Computed:            true,
 			},
-			"port_forwards": schema.ListNestedAttribute{
-				MarkdownDescription: "Port forwards returned by TensorDock for the instance.",
-				Computed:            true,
-				PlanModifiers: []planmodifier.List{
-					listplanmodifier.UseStateForUnknown(),
-				},
-				NestedObject: schema.NestedAttributeObject{
-					Attributes: map[string]schema.Attribute{
-						"internal_port": schema.Int64Attribute{
-							Computed:            true,
-							MarkdownDescription: "Internal port on the virtual machine.",
-							PlanModifiers: []planmodifier.Int64{
-								int64planmodifier.UseStateForUnknown(),
-							},
-						},
-						"external_port": schema.Int64Attribute{
-							Computed:            true,
-							MarkdownDescription: "Externally exposed port.",
-							PlanModifiers: []planmodifier.Int64{
-								int64planmodifier.UseStateForUnknown(),
-							},
-						},
-					},
-				},
-			},
 		},
 	}
 }
@@ -213,23 +226,29 @@ func (r *InstanceResource) Create(ctx context.Context, req resource.CreateReques
 		return
 	}
 
-	cloudInit, desiredPowerState, useDedicatedIP := normalizeInstancePlan(&plan)
-	resp.Diagnostics.Append(validateInstancePlan(plan, desiredPowerState, cloudInit)...)
+	cloudInit, desiredPowerState, useDedicatedIP, portForwards := normalizeInstancePlan(ctx, &plan, &resp.Diagnostics)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	resp.Diagnostics.Append(validateInstancePlan(plan, desiredPowerState, cloudInit, portForwards)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
 	created, err := r.client.CreateInstance(ctx, CreateInstanceInput{
-		Name:           plan.Name.ValueString(),
-		Image:          plan.Image.ValueString(),
-		LocationID:     plan.LocationID.ValueString(),
+		Name:           strings.TrimSpace(plan.Name.ValueString()),
+		Image:          strings.TrimSpace(plan.Image.ValueString()),
+		LocationID:     strings.TrimSpace(plan.LocationID.ValueString()),
+		HostnodeID:     strings.TrimSpace(plan.HostnodeID.ValueString()),
 		VCPUCount:      plan.VCPUCount.ValueInt64(),
 		RAMGB:          plan.RAMGB.ValueInt64(),
 		StorageGB:      plan.StorageGB.ValueInt64(),
-		GPUType:        plan.GPUType.ValueString(),
+		GPUType:        strings.TrimSpace(plan.GPUType.ValueString()),
 		GPUCount:       plan.GPUCount.ValueInt64(),
 		UseDedicatedIP: useDedicatedIP,
-		SSHPublicKey:   plan.SSHPublicKey.ValueString(),
+		PortForwards:   portForwards,
+		SSHPublicKey:   strings.TrimSpace(plan.SSHPublicKey.ValueString()),
 		CloudInit:      cloudInit,
 	})
 	if err != nil {
@@ -259,6 +278,7 @@ func (r *InstanceResource) Create(ctx context.Context, req resource.CreateReques
 	}
 
 	plan.UseDedicatedIP = types.BoolValue(useDedicatedIP)
+	plan.PortForwards = buildPortForwardList(portForwards)
 	syncModelFromRemote(&plan, remote)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
@@ -298,19 +318,14 @@ func (r *InstanceResource) Update(ctx context.Context, req resource.UpdateReques
 		return
 	}
 
-	cloudInit, desiredPowerState, useDedicatedIP := normalizeInstancePlan(&plan)
-	plan.UseDedicatedIP = types.BoolValue(useDedicatedIP)
-
-	resp.Diagnostics.Append(validateInstancePlan(plan, desiredPowerState, cloudInit)...)
+	cloudInit, desiredPowerState, useDedicatedIP, portForwards := normalizeInstancePlan(ctx, &plan, &resp.Diagnostics)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	if state.StorageGB.ValueInt64() > 0 && plan.StorageGB.ValueInt64() < state.StorageGB.ValueInt64() {
-		resp.Diagnostics.AddError(
-			"TensorDock does not support shrinking instance storage in place",
-			"The public TensorDock modify endpoint only allows storage to be increased. Recreate the instance to apply a smaller `storage_gb` value.",
-		)
+	resp.Diagnostics.Append(validateInstancePlan(plan, desiredPowerState, cloudInit, portForwards)...)
+	resp.Diagnostics.Append(validateInstanceUpdate(state, plan)...)
+	if resp.Diagnostics.HasError() {
 		return
 	}
 
@@ -336,7 +351,7 @@ func (r *InstanceResource) Update(ctx context.Context, req resource.UpdateReques
 			VCPUCount: plan.VCPUCount.ValueInt64(),
 			RAMGB:     plan.RAMGB.ValueInt64(),
 			StorageGB: plan.StorageGB.ValueInt64(),
-			GPUType:   plan.GPUType.ValueString(),
+			GPUType:   strings.TrimSpace(plan.GPUType.ValueString()),
 			GPUCount:  plan.GPUCount.ValueInt64(),
 		})
 		if err != nil {
@@ -357,6 +372,8 @@ func (r *InstanceResource) Update(ctx context.Context, req resource.UpdateReques
 		return
 	}
 
+	plan.UseDedicatedIP = types.BoolValue(useDedicatedIP)
+	plan.PortForwards = buildPortForwardList(portForwards)
 	syncModelFromRemote(&plan, remote)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
@@ -419,20 +436,28 @@ func (r *InstanceResource) reconcilePowerState(ctx context.Context, id string, c
 	}
 }
 
-func validateInstancePlan(plan InstanceResourceModel, desiredPowerState string, cloudInit map[string]any) diag.Diagnostics {
+func validateInstancePlan(plan InstanceResourceModel, desiredPowerState string, cloudInit map[string]any, portForwards []PortForward) diag.Diagnostics {
 	var diags diag.Diagnostics
 
-	if plan.Name.IsNull() || plan.Name.IsUnknown() || strings.TrimSpace(plan.Name.ValueString()) == "" {
+	name := strings.TrimSpace(plan.Name.ValueString())
+	image := strings.TrimSpace(plan.Image.ValueString())
+	locationID := strings.TrimSpace(plan.LocationID.ValueString())
+	hostnodeID := strings.TrimSpace(plan.HostnodeID.ValueString())
+	sshPublicKey := strings.TrimSpace(plan.SSHPublicKey.ValueString())
+	gpuType := strings.TrimSpace(plan.GPUType.ValueString())
+	gpuCount := plan.GPUCount.ValueInt64()
+
+	if plan.Name.IsNull() || plan.Name.IsUnknown() || name == "" {
 		diags.AddError("Missing instance name", "`name` must be a non-empty string.")
 	}
-	if plan.Image.IsNull() || plan.Image.IsUnknown() || strings.TrimSpace(plan.Image.ValueString()) == "" {
+	if plan.Image.IsNull() || plan.Image.IsUnknown() || image == "" {
 		diags.AddError("Missing image", "`image` must be a non-empty string.")
 	}
-	if plan.LocationID.IsNull() || plan.LocationID.IsUnknown() || strings.TrimSpace(plan.LocationID.ValueString()) == "" {
-		diags.AddError("Missing location ID", "`location_id` must be a non-empty string.")
+	if locationID == "" && hostnodeID == "" {
+		diags.AddError("Missing placement target", "Exactly one of `location_id` or `hostnode_id` must be supplied.")
 	}
-	if plan.SSHPublicKey.IsNull() || plan.SSHPublicKey.IsUnknown() || strings.TrimSpace(plan.SSHPublicKey.ValueString()) == "" {
-		diags.AddError("Missing SSH public key", "`ssh_public_key` must be supplied because TensorDock documents SSH keys as required during instance creation.")
+	if locationID != "" && hostnodeID != "" {
+		diags.AddError("Conflicting placement target", "`location_id` and `hostnode_id` are mutually exclusive.")
 	}
 	if plan.VCPUCount.IsNull() || plan.VCPUCount.IsUnknown() || plan.VCPUCount.ValueInt64() <= 0 {
 		diags.AddError("Invalid vCPU count", "`vcpu_count` must be greater than zero.")
@@ -443,11 +468,25 @@ func validateInstancePlan(plan InstanceResourceModel, desiredPowerState string, 
 	if plan.StorageGB.IsNull() || plan.StorageGB.IsUnknown() || plan.StorageGB.ValueInt64() < 100 {
 		diags.AddError("Invalid storage size", "TensorDock documents a minimum of 100GB for instance creation.")
 	}
-	if plan.GPUType.IsNull() || plan.GPUType.IsUnknown() || strings.TrimSpace(plan.GPUType.ValueString()) == "" {
-		diags.AddError("Missing GPU type", "`gpu_type` must be supplied for location-based deployments.")
+	if gpuCount < 0 {
+		diags.AddError("Invalid GPU count", "`gpu_count` cannot be negative.")
 	}
-	if plan.GPUCount.IsNull() || plan.GPUCount.IsUnknown() || plan.GPUCount.ValueInt64() < 1 {
-		diags.AddError("Invalid GPU count", "TensorDock documents that at least one GPU is required for location-based deployment.")
+	if gpuType == "" && gpuCount > 0 {
+		diags.AddError("Missing GPU type", "`gpu_type` must be supplied when `gpu_count` is greater than zero.")
+	}
+	if gpuType != "" && gpuCount < 1 {
+		diags.AddError("Invalid GPU count", "`gpu_count` must be at least 1 when `gpu_type` is supplied.")
+	}
+	if locationID != "" {
+		if gpuType == "" {
+			diags.AddError("Missing GPU type", "`gpu_type` must be supplied for location-based deployment.")
+		}
+		if gpuCount < 1 {
+			diags.AddError("Invalid GPU count", "TensorDock location-based deployment requires at least one GPU.")
+		}
+	}
+	if requiresSSHKey(image) && sshPublicKey == "" {
+		diags.AddError("Missing SSH public key", "`ssh_public_key` must be supplied for non-Windows images.")
 	}
 	if desiredPowerState != "running" && desiredPowerState != "stopped" {
 		diags.AddError("Invalid power_state", "`power_state` must be either `running` or `stopped`.")
@@ -459,10 +498,48 @@ func validateInstancePlan(plan InstanceResourceModel, desiredPowerState string, 
 		diags.AddError("Invalid cloud_init_json", "`cloud_init_json` must decode to a JSON object.")
 	}
 
+	for _, portForward := range portForwards {
+		if !validPort(portForward.InternalPort) || !validPort(portForward.ExternalPort) {
+			diags.AddError(
+				"Invalid port_forwards entry",
+				"`port_forwards` values must use ports between 1 and 65535.",
+			)
+			break
+		}
+	}
+
 	return diags
 }
 
-func normalizeInstancePlan(plan *InstanceResourceModel) (map[string]any, string, bool) {
+func validateInstanceUpdate(state, plan InstanceResourceModel) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	if state.StorageGB.ValueInt64() > 0 && plan.StorageGB.ValueInt64() < state.StorageGB.ValueInt64() {
+		diags.AddError(
+			"TensorDock does not support shrinking instance storage in place",
+			"The public TensorDock modify endpoint only allows storage to be increased. Recreate the instance to apply a smaller `storage_gb` value.",
+		)
+	}
+
+	if state.VCPUCount.ValueInt64() != plan.VCPUCount.ValueInt64() && plan.VCPUCount.ValueInt64()%2 != 0 {
+		diags.AddError("Invalid vCPU count for modification", "The documented TensorDock modify endpoint requires CPU changes to use a multiple of 2 cores.")
+	}
+
+	if state.RAMGB.ValueInt64() != plan.RAMGB.ValueInt64() && !validModifyRAM(plan.RAMGB.ValueInt64()) {
+		diags.AddError("Invalid RAM size for modification", "The documented TensorDock modify endpoint only accepts specific RAM sizes.")
+	}
+
+	if state.GPUCount.ValueInt64() > 0 && plan.GPUCount.ValueInt64() == 0 {
+		diags.AddError(
+			"Removing GPUs is not supported in place",
+			"The verified TensorDock modify payload only supports GPU changes when both `gpu_type` and `gpu_count` are supplied. Recreate the instance to remove GPUs.",
+		)
+	}
+
+	return diags
+}
+
+func normalizeInstancePlan(ctx context.Context, plan *InstanceResourceModel, diags *diag.Diagnostics) (map[string]any, string, bool, []PortForward) {
 	desiredPowerState := "running"
 	if !plan.PowerState.IsNull() && !plan.PowerState.IsUnknown() {
 		desiredPowerState = strings.TrimSpace(strings.ToLower(plan.PowerState.ValueString()))
@@ -475,6 +552,31 @@ func normalizeInstancePlan(plan *InstanceResourceModel) (map[string]any, string,
 	}
 	plan.UseDedicatedIP = types.BoolValue(useDedicatedIP)
 
+	if plan.GPUType.IsNull() || plan.GPUType.IsUnknown() {
+		plan.GPUType = types.StringValue("")
+	}
+	if plan.GPUCount.IsNull() || plan.GPUCount.IsUnknown() {
+		plan.GPUCount = types.Int64Value(0)
+	}
+
+	portForwards := []PortForward{}
+	if !plan.PortForwards.IsNull() && !plan.PortForwards.IsUnknown() {
+		var planPortForwards []PortForwardModel
+		diags.Append(plan.PortForwards.ElementsAs(ctx, &planPortForwards, false)...)
+		if diags.HasError() {
+			return nil, desiredPowerState, useDedicatedIP, nil
+		}
+
+		portForwards = make([]PortForward, 0, len(planPortForwards))
+		for _, portForward := range planPortForwards {
+			portForwards = append(portForwards, PortForward{
+				InternalPort: portForward.InternalPort.ValueInt64(),
+				ExternalPort: portForward.ExternalPort.ValueInt64(),
+			})
+		}
+	}
+	plan.PortForwards = buildPortForwardList(portForwards)
+
 	cloudInit := map[string]any(nil)
 	if !plan.CloudInitJSON.IsNull() && !plan.CloudInitJSON.IsUnknown() {
 		trimmed := strings.TrimSpace(plan.CloudInitJSON.ValueString())
@@ -486,7 +588,7 @@ func normalizeInstancePlan(plan *InstanceResourceModel) (map[string]any, string,
 		}
 	}
 
-	return cloudInit, desiredPowerState, useDedicatedIP
+	return cloudInit, desiredPowerState, useDedicatedIP, portForwards
 }
 
 func hasHardwareChange(state, plan InstanceResourceModel) bool {
@@ -494,7 +596,7 @@ func hasHardwareChange(state, plan InstanceResourceModel) bool {
 		state.RAMGB.ValueInt64() != plan.RAMGB.ValueInt64() ||
 		state.StorageGB.ValueInt64() != plan.StorageGB.ValueInt64() ||
 		state.GPUCount.ValueInt64() != plan.GPUCount.ValueInt64() ||
-		state.GPUType.ValueString() != plan.GPUType.ValueString()
+		strings.TrimSpace(state.GPUType.ValueString()) != strings.TrimSpace(plan.GPUType.ValueString())
 }
 
 func syncModelFromRemote(model *InstanceResourceModel, remote Instance) {
@@ -532,57 +634,36 @@ func syncModelFromRemote(model *InstanceResourceModel, remote Instance) {
 	}
 	if remote.GPUType != "" {
 		model.GPUType = types.StringValue(remote.GPUType)
+	} else {
+		model.GPUType = types.StringValue("")
 	}
 	if remote.GPUCount > 0 {
 		model.GPUCount = types.Int64Value(remote.GPUCount)
+	} else {
+		model.GPUCount = types.Int64Value(0)
 	}
 
 	model.PortForwards = buildPortForwardList(remote.PortForwards)
 }
 
-func buildPortForwardList(portForwards []PortForward) types.List {
-	objectType := types.ObjectType{AttrTypes: map[string]attr.Type{
-		"internal_port": types.Int64Type,
-		"external_port": types.Int64Type,
-	}}
-
-	if len(portForwards) == 0 {
-		empty, diags := types.ListValue(objectType, []attr.Value{})
-		if diags.HasError() {
-			return types.ListNull(objectType)
-		}
-		return empty
-	}
-
-	sorted := append([]PortForward(nil), portForwards...)
-	sort.Slice(sorted, func(i, j int) bool {
-		if sorted[i].ExternalPort == sorted[j].ExternalPort {
-			return sorted[i].InternalPort < sorted[j].InternalPort
-		}
-		return sorted[i].ExternalPort < sorted[j].ExternalPort
-	})
-
-	values := make([]attr.Value, 0, len(sorted))
-	for _, pf := range sorted {
-		objectValue, diags := types.ObjectValue(objectType.AttrTypes, map[string]attr.Value{
-			"internal_port": types.Int64Value(pf.InternalPort),
-			"external_port": types.Int64Value(pf.ExternalPort),
-		})
-		if diags.HasError() {
-			return types.ListNull(objectType)
-		}
-		values = append(values, objectValue)
-	}
-
-	listValue, diags := types.ListValue(objectType, values)
-	if diags.HasError() {
-		return types.ListNull(objectType)
-	}
-
-	return listValue
-}
-
 func isStoppedStatus(status string) bool {
 	normalized := normalizeStatus(status)
 	return normalized == "stopped" || normalized == "stoppeddisassociated"
+}
+
+func validModifyRAM(value int64) bool {
+	allowed := map[int64]bool{
+		2: true, 4: true, 6: true, 8: true, 10: true, 16: true, 32: true, 48: true,
+		64: true, 80: true, 96: true, 112: true, 128: true, 144: true, 160: true,
+		176: true, 192: true, 208: true, 224: true, 240: true, 256: true, 512: true,
+	}
+	return allowed[value]
+}
+
+func validPort(value int64) bool {
+	return value >= 1 && value <= 65535
+}
+
+func requiresSSHKey(image string) bool {
+	return !strings.HasPrefix(strings.ToLower(strings.TrimSpace(image)), "windows")
 }

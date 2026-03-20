@@ -99,9 +99,13 @@ func (p *TensorDockProvider) Configure(ctx context.Context, req provider.Configu
 func (p *TensorDockProvider) Resources(_ context.Context) []func() resource.Resource {
 	return []func() resource.Resource{
 		NewInstanceResource,
+		NewSecretResource,
 	}
 }
 
 func (p *TensorDockProvider) DataSources(_ context.Context) []func() datasource.DataSource {
-	return nil
+	return []func() datasource.DataSource{
+		NewHostnodesDataSource,
+		NewLocationsDataSource,
+	}
 }

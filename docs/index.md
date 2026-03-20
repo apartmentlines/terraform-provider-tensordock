@@ -2,12 +2,22 @@
 page_title: "TensorDock Provider"
 subcategory: "Compute"
 description: |-
-  Terraform provider for provisioning TensorDock virtual machine instances through the public v2 REST API.
+  Terraform provider for managing TensorDock resources through the public v2 REST API.
 ---
 
 # TensorDock Provider
 
 The TensorDock provider authenticates to the public TensorDock v2 API with a bearer token.
+
+Supported resources:
+
+- `tensordock_instance`
+- `tensordock_secret`
+
+Supported data sources:
+
+- `tensordock_locations`
+- `tensordock_hostnodes`
 
 ## Example
 
