@@ -11,25 +11,38 @@ The TensorDock provider authenticates to the public TensorDock v2 API with a bea
 
 Supported resources:
 
-- `tensordock_instance`
-- `tensordock_secret`
+- [`tensordock_instance`](resources/instance.md)
+- [`tensordock_secret`](resources/secret.md)
 
 Supported ephemeral resources:
 
-- `tensordock_secret_value`
+- [`tensordock_secret_value`](ephemeral-resources/secret_value.md)
 
 Supported data sources:
 
-- `tensordock_locations`
-- `tensordock_hostnodes`
+- [`tensordock_locations`](data-sources/locations.md)
+- [`tensordock_hostnodes`](data-sources/hostnodes.md)
 
 ## Example
 
 ```terraform
+terraform {
+  required_providers {
+    tensordock = {
+      source = "apartmentlines/tensordock"
+    }
+  }
+}
+
 provider "tensordock" {
   api_token = var.tensordock_api_token
 }
 ```
+
+## Compatibility
+
+- `tensordock_secret_value` requires Terraform `>= 1.11.0`.
+- Direct instance creation can pass `ssh_public_key` from a file or from `ephemeral.tensordock_secret_value.<name>.value`.
 
 ## Schema
 

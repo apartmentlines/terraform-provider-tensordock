@@ -28,18 +28,26 @@ ephemeral "tensordock_secret_value" "deploy_key" {
 }
 
 resource "tensordock_instance" "gpu_worker" {
-  name           = "gpu-worker-1"
-  image          = "ubuntu2404"
-  location_id    = "loc-uuid-12345"
-  vcpu_count     = 8
-  ram_gb         = 32
-  storage_gb     = 200
-  gpu_type       = "geforcertx4090-pcie-24gb"
-  gpu_count      = 1
+  name        = "gpu-worker-1"
+  image       = "ubuntu2404"
+  location_id = "loc-uuid-12345"
+
+  vcpu_count = 8
+  ram_gb     = 32
+  storage_gb = 200
+  gpu_type   = "geforcertx4090-pcie-24gb"
+  gpu_count  = 1
+
   ssh_public_key = ephemeral.tensordock_secret_value.deploy_key.value
   power_state    = "running"
 }
 ```
+
+## Behavior notes
+
+- `value` is fetched live for the current Terraform run only.
+- `value` is not persisted to state.
+- This resource is mainly useful for passing secret material into write-only arguments such as `tensordock_instance.ssh_public_key`.
 
 ## Argument Reference
 
