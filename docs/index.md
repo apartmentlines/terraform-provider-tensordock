@@ -14,6 +14,10 @@ Supported resources:
 - `tensordock_instance`
 - `tensordock_secret`
 
+Supported ephemeral resources:
+
+- `tensordock_secret_value`
+
 Supported data sources:
 
 - `tensordock_locations`

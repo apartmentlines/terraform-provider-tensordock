@@ -59,6 +59,16 @@ func TestValidateInstancePlanWindowsImageDoesNotRequireSSHKey(t *testing.T) {
 	}
 }
 
+func TestValidateInstancePlanRequiresSSHKeyForLinuxImage(t *testing.T) {
+	plan := validLocationPlan()
+	plan.SSHPublicKey = types.StringNull()
+
+	diags := validateInstancePlan(plan, "running", nil, nil)
+	if !diags.HasError() {
+		t.Fatal("expected diagnostics when ssh_public_key is not set for a non-Windows image")
+	}
+}
+
 func TestValidateInstanceUpdateRejectsUnsupportedModifyShapes(t *testing.T) {
 	state := validLocationPlan()
 	plan := validLocationPlan()

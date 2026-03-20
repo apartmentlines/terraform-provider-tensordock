@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
+	"github.com/hashicorp/terraform-plugin-framework/ephemeral"
 	"github.com/hashicorp/terraform-plugin-framework/provider"
 	"github.com/hashicorp/terraform-plugin-framework/provider/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -15,7 +16,10 @@ import (
 
 const defaultBaseURL = "https://dashboard.tensordock.com/api/v2"
 
-var _ provider.Provider = &TensorDockProvider{}
+var (
+	_ provider.Provider                       = &TensorDockProvider{}
+	_ provider.ProviderWithEphemeralResources = &TensorDockProvider{}
+)
 
 func New(version string) func() provider.Provider {
 	return func() provider.Provider {
@@ -94,6 +98,7 @@ func (p *TensorDockProvider) Configure(ctx context.Context, req provider.Configu
 
 	resp.ResourceData = client
 	resp.DataSourceData = client
+	resp.EphemeralResourceData = client
 }
 
 func (p *TensorDockProvider) Resources(_ context.Context) []func() resource.Resource {
@@ -107,5 +112,11 @@ func (p *TensorDockProvider) DataSources(_ context.Context) []func() datasource.
 	return []func() datasource.DataSource{
 		NewHostnodesDataSource,
 		NewLocationsDataSource,
+	}
+}
+
+func (p *TensorDockProvider) EphemeralResources(_ context.Context) []func() ephemeral.EphemeralResource {
+	return []func() ephemeral.EphemeralResource{
+		NewSecretValueEphemeralResource,
 	}
 }

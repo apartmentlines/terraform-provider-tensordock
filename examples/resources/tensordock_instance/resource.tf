@@ -1,3 +1,7 @@
+terraform {
+  required_version = ">= 1.11.0"
+}
+
 resource "tensordock_instance" "example" {
   name             = "gpu-worker-1"
   image            = "ubuntu2404"

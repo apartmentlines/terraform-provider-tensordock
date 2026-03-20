@@ -158,8 +158,10 @@ func (r *InstanceResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 				},
 			},
 			"ssh_public_key": schema.StringAttribute{
-				MarkdownDescription: "SSH public key injected during instance creation. Required for non-Windows images.",
+				MarkdownDescription: "SSH public key injected during instance creation. This attribute is write-only and is not stored in Terraform state. Required for non-Windows images.",
 				Optional:            true,
+				WriteOnly:           true,
+				Sensitive:           true,
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
 				},
@@ -279,6 +281,7 @@ func (r *InstanceResource) Create(ctx context.Context, req resource.CreateReques
 
 	plan.UseDedicatedIP = types.BoolValue(useDedicatedIP)
 	plan.PortForwards = buildPortForwardList(portForwards)
+	plan.SSHPublicKey = types.StringNull()
 	syncModelFromRemote(&plan, remote)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
@@ -304,6 +307,7 @@ func (r *InstanceResource) Read(ctx context.Context, req resource.ReadRequest, r
 	}
 
 	syncModelFromRemote(&state, remote)
+	state.SSHPublicKey = types.StringNull()
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
@@ -374,6 +378,7 @@ func (r *InstanceResource) Update(ctx context.Context, req resource.UpdateReques
 
 	plan.UseDedicatedIP = types.BoolValue(useDedicatedIP)
 	plan.PortForwards = buildPortForwardList(portForwards)
+	plan.SSHPublicKey = types.StringNull()
 	syncModelFromRemote(&plan, remote)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }

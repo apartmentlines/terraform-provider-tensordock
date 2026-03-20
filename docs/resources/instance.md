@@ -12,6 +12,10 @@ Manages a TensorDock virtual machine instance using the public instance creation
 ## Example Usage
 
 ```terraform
+terraform {
+  required_version = ">= 1.11.0"
+}
+
 resource "tensordock_instance" "gpu_worker" {
   name        = "gpu-worker-1"
   image       = "ubuntu2404"
@@ -29,6 +33,28 @@ resource "tensordock_instance" "gpu_worker" {
     external_port = 22022
   }]
   ssh_public_key = file("~/.ssh/id_ed25519.pub")
+  power_state    = "running"
+}
+
+resource "tensordock_secret" "deploy_key" {
+  name = "deploy-key"
+  type = "SSHKEY"
+}
+
+ephemeral "tensordock_secret_value" "gpu_worker_ssh" {
+  secret_id = tensordock_secret.deploy_key.id
+}
+
+resource "tensordock_instance" "gpu_worker_from_secret_value" {
+  name           = "gpu-worker-2"
+  image          = "ubuntu2404"
+  location_id    = "loc-uuid-12345"
+  vcpu_count     = 8
+  ram_gb         = 32
+  storage_gb     = 200
+  gpu_type       = "geforcertx4090-pcie-24gb"
+  gpu_count      = 1
+  ssh_public_key = ephemeral.tensordock_secret_value.gpu_worker_ssh.value
   power_state    = "running"
 }
 ```
@@ -57,7 +83,7 @@ resource "tensordock_instance" "gpu_worker" {
 
 - `use_dedicated_ip` (Boolean) Request a dedicated IP during creation. Replace-only.
 - `port_forwards` (List of Objects) Optional create-time port forward mappings. Replace-only.
-- `ssh_public_key` (String) SSH public key injected during instance creation. Required for non-Windows images. Replace-only.
+- `ssh_public_key` (String, Sensitive) SSH public key injected during instance creation. This attribute is write-only and is not stored in Terraform state. Required for non-Windows images. Replace-only.
 - `cloud_init_json` (String) JSON representation of TensorDock's documented `cloud_init` object. Replace-only.
 - `power_state` (String) Desired power state. Valid values are `running` and `stopped`.
 
