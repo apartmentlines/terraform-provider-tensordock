@@ -222,8 +222,10 @@ func (r *InstanceResource) Configure(_ context.Context, req resource.ConfigureRe
 
 func (r *InstanceResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
 	var plan InstanceResourceModel
+	var sshPublicKey types.String
 
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("ssh_public_key"), &sshPublicKey)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -233,7 +235,7 @@ func (r *InstanceResource) Create(ctx context.Context, req resource.CreateReques
 		return
 	}
 
-	resp.Diagnostics.Append(validateInstancePlan(plan, desiredPowerState, cloudInit, portForwards)...)
+	resp.Diagnostics.Append(validateInstancePlan(plan, desiredPowerState, cloudInit, portForwards, true, strings.TrimSpace(sshPublicKey.ValueString()))...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -250,7 +252,7 @@ func (r *InstanceResource) Create(ctx context.Context, req resource.CreateReques
 		GPUCount:       plan.GPUCount.ValueInt64(),
 		UseDedicatedIP: useDedicatedIP,
 		PortForwards:   portForwards,
-		SSHPublicKey:   strings.TrimSpace(plan.SSHPublicKey.ValueString()),
+		SSHPublicKey:   strings.TrimSpace(sshPublicKey.ValueString()),
 		CloudInit:      cloudInit,
 	})
 	if err != nil {
@@ -327,7 +329,7 @@ func (r *InstanceResource) Update(ctx context.Context, req resource.UpdateReques
 		return
 	}
 
-	resp.Diagnostics.Append(validateInstancePlan(plan, desiredPowerState, cloudInit, portForwards)...)
+	resp.Diagnostics.Append(validateInstancePlan(plan, desiredPowerState, cloudInit, portForwards, false, "")...)
 	resp.Diagnostics.Append(validateInstanceUpdate(state, plan)...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -441,14 +443,13 @@ func (r *InstanceResource) reconcilePowerState(ctx context.Context, id string, c
 	}
 }
 
-func validateInstancePlan(plan InstanceResourceModel, desiredPowerState string, cloudInit map[string]any, portForwards []PortForward) diag.Diagnostics {
+func validateInstancePlan(plan InstanceResourceModel, desiredPowerState string, cloudInit map[string]any, portForwards []PortForward, requireCreateOnlyFields bool, sshPublicKey string) diag.Diagnostics {
 	var diags diag.Diagnostics
 
 	name := strings.TrimSpace(plan.Name.ValueString())
 	image := strings.TrimSpace(plan.Image.ValueString())
 	locationID := strings.TrimSpace(plan.LocationID.ValueString())
 	hostnodeID := strings.TrimSpace(plan.HostnodeID.ValueString())
-	sshPublicKey := strings.TrimSpace(plan.SSHPublicKey.ValueString())
 	gpuType := strings.TrimSpace(plan.GPUType.ValueString())
 	gpuCount := plan.GPUCount.ValueInt64()
 
@@ -490,7 +491,7 @@ func validateInstancePlan(plan InstanceResourceModel, desiredPowerState string, 
 			diags.AddError("Invalid GPU count", "TensorDock location-based deployment requires at least one GPU.")
 		}
 	}
-	if requiresSSHKey(image) && sshPublicKey == "" {
+	if requireCreateOnlyFields && requiresSSHKey(image) && sshPublicKey == "" {
 		diags.AddError("Missing SSH public key", "`ssh_public_key` must be supplied for non-Windows images.")
 	}
 	if desiredPowerState != "running" && desiredPowerState != "stopped" {

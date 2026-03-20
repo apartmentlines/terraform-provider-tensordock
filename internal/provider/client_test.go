@@ -180,6 +180,47 @@ func TestClientCreateInstanceHostnodePayload(t *testing.T) {
 	}
 }
 
+func TestClientCreateInstanceRejectsBodyLevelAPIError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/instances" || r.Method != http.MethodPost {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"error":"Hostnode unavailable","status":400}`))
+	}))
+	defer server.Close()
+
+	client, err := NewClient(server.URL, "token", "test")
+	if err != nil {
+		t.Fatalf("NewClient returned error: %v", err)
+	}
+
+	_, err = client.CreateInstance(context.Background(), CreateInstanceInput{
+		Name:         "cpu-worker",
+		Image:        "ubuntu2404",
+		HostnodeID:   "host-123",
+		VCPUCount:    4,
+		RAMGB:        8,
+		StorageGB:    100,
+		SSHPublicKey: "ssh-ed25519 AAAA...",
+	})
+	if err == nil || !strings.Contains(err.Error(), "Hostnode unavailable") {
+		t.Fatalf("expected API body error, got: %v", err)
+	}
+}
+
+func TestDecodeCreateInstanceResponseSupportsDirectShape(t *testing.T) {
+	instance, err := decodeCreateInstanceResponse([]byte(`{"id":"inst_789","name":"gpu-worker","status":"queued"}`))
+	if err != nil {
+		t.Fatalf("decodeCreateInstanceResponse returned error: %v", err)
+	}
+
+	if instance.ID != "inst_789" || instance.Name != "gpu-worker" || instance.Status != "queued" {
+		t.Fatalf("unexpected instance: %+v", instance)
+	}
+}
+
 func TestClientListLocationsDecodesResponse(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/locations" {

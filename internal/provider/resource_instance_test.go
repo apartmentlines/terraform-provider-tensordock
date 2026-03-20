@@ -10,7 +10,7 @@ func TestValidateInstancePlanRequiresExactlyOnePlacementTarget(t *testing.T) {
 	base := validLocationPlan()
 	base.LocationID = types.StringNull()
 
-	diags := validateInstancePlan(base, "running", nil, nil)
+	diags := validateInstancePlan(base, "running", nil, nil, true, base.SSHPublicKey.ValueString())
 	if !diags.HasError() {
 		t.Fatal("expected diagnostics when neither location_id nor hostnode_id is set")
 	}
@@ -18,7 +18,7 @@ func TestValidateInstancePlanRequiresExactlyOnePlacementTarget(t *testing.T) {
 	base = validLocationPlan()
 	base.HostnodeID = types.StringValue("host-1")
 
-	diags = validateInstancePlan(base, "running", nil, nil)
+	diags = validateInstancePlan(base, "running", nil, nil, true, base.SSHPublicKey.ValueString())
 	if !diags.HasError() {
 		t.Fatal("expected diagnostics when both location_id and hostnode_id are set")
 	}
@@ -29,7 +29,7 @@ func TestValidateInstancePlanRequiresGPUForLocationPlacement(t *testing.T) {
 	plan.GPUType = types.StringValue("")
 	plan.GPUCount = types.Int64Value(0)
 
-	diags := validateInstancePlan(plan, "running", nil, nil)
+	diags := validateInstancePlan(plan, "running", nil, nil, true, plan.SSHPublicKey.ValueString())
 	if !diags.HasError() {
 		t.Fatal("expected diagnostics for location deployment without GPUs")
 	}
@@ -42,7 +42,7 @@ func TestValidateInstancePlanAllowsCPUOnlyHostnodePlacement(t *testing.T) {
 	plan.GPUType = types.StringValue("")
 	plan.GPUCount = types.Int64Value(0)
 
-	diags := validateInstancePlan(plan, "running", nil, nil)
+	diags := validateInstancePlan(plan, "running", nil, nil, true, plan.SSHPublicKey.ValueString())
 	if diags.HasError() {
 		t.Fatalf("expected no diagnostics, got: %+v", diags)
 	}
@@ -53,7 +53,7 @@ func TestValidateInstancePlanWindowsImageDoesNotRequireSSHKey(t *testing.T) {
 	plan.Image = types.StringValue("windows10")
 	plan.SSHPublicKey = types.StringNull()
 
-	diags := validateInstancePlan(plan, "running", nil, nil)
+	diags := validateInstancePlan(plan, "running", nil, nil, true, "")
 	if diags.HasError() {
 		t.Fatalf("expected no diagnostics, got: %+v", diags)
 	}
@@ -63,9 +63,19 @@ func TestValidateInstancePlanRequiresSSHKeyForLinuxImage(t *testing.T) {
 	plan := validLocationPlan()
 	plan.SSHPublicKey = types.StringNull()
 
-	diags := validateInstancePlan(plan, "running", nil, nil)
+	diags := validateInstancePlan(plan, "running", nil, nil, true, "")
 	if !diags.HasError() {
 		t.Fatal("expected diagnostics when ssh_public_key is not set for a non-Windows image")
+	}
+}
+
+func TestValidateInstanceUpdateDoesNotRequireSSHKey(t *testing.T) {
+	plan := validLocationPlan()
+	plan.SSHPublicKey = types.StringNull()
+
+	diags := validateInstancePlan(plan, "running", nil, nil, false, "")
+	if diags.HasError() {
+		t.Fatalf("expected no diagnostics for update validation without ssh_public_key, got: %+v", diags)
 	}
 }
 

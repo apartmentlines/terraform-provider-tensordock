@@ -13,9 +13,13 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/hashicorp/terraform-plugin-log/tflog"
 )
 
 var ErrNotFound = errors.New("resource not found")
+
+const defaultHTTPTimeout = 120 * time.Second
 
 type Client struct {
 	baseURL    *url.URL
@@ -42,7 +46,7 @@ func NewClient(rawBaseURL, apiToken, version string) (*Client, error) {
 		apiToken:  apiToken,
 		userAgent: userAgent,
 		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout: defaultHTTPTimeout,
 		},
 	}, nil
 }
@@ -128,16 +132,16 @@ type HostnodeGPU struct {
 }
 
 type HostnodeLocation struct {
-	UUID                   string `json:"uuid"`
-	City                   string `json:"city"`
-	StateProvince          string `json:"stateprovince"`
-	Country                string `json:"country"`
-	HasNetworkStorage      bool   `json:"has_network_storage"`
+	UUID                   string  `json:"uuid"`
+	City                   string  `json:"city"`
+	StateProvince          string  `json:"stateprovince"`
+	Country                string  `json:"country"`
+	HasNetworkStorage      bool    `json:"has_network_storage"`
 	NetworkSpeedGbps       float64 `json:"network_speed_gbps"`
 	NetworkSpeedUploadGbps float64 `json:"network_speed_upload_gbps"`
-	Organization           string `json:"organization"`
-	OrganizationName       string `json:"organizationName"`
-	Tier                   int64  `json:"tier"`
+	Organization           string  `json:"organization"`
+	OrganizationName       string  `json:"organizationName"`
+	Tier                   int64   `json:"tier"`
 }
 
 type HostnodeAvailableResources struct {
@@ -190,6 +194,12 @@ type apiError struct {
 
 func (e *apiError) Error() string {
 	return fmt.Sprintf("TensorDock API returned HTTP %d: %s", e.StatusCode, e.Body)
+}
+
+type apiBodyErrorPayload struct {
+	Error   string `json:"error"`
+	Message string `json:"message"`
+	Status  int    `json:"status"`
 }
 
 type gpuDetails struct {
@@ -388,26 +398,16 @@ func (c *Client) CreateInstance(ctx context.Context, input CreateInstanceInput) 
 		return Instance{}, err
 	}
 
-	var resp struct {
-		Data struct {
-			ID     string `json:"id"`
-			Name   string `json:"name"`
-			Status string `json:"status"`
-		} `json:"data"`
+	if err := apiErrorFromBody(body); err != nil {
+		return Instance{}, err
 	}
 
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return Instance{}, fmt.Errorf("decode create instance response: %w", err)
-	}
-	if resp.Data.ID == "" {
-		return Instance{}, fmt.Errorf("decode create instance response: missing instance ID")
+	created, err := decodeCreateInstanceResponse(body)
+	if err != nil {
+		return Instance{}, err
 	}
 
-	return Instance{
-		ID:     resp.Data.ID,
-		Name:   resp.Data.Name,
-		Status: resp.Data.Status,
-	}, nil
+	return created, nil
 }
 
 func (c *Client) GetInstance(ctx context.Context, id string) (Instance, error) {
@@ -518,16 +518,40 @@ func (c *Client) doJSON(ctx context.Context, method, endpoint string, payload an
 	endpointURL.Path = path.Join(endpointURL.Path, strings.TrimPrefix(endpoint, "/"))
 
 	var requestBody io.Reader
+	var requestBodyBytes []byte
 	if payload != nil {
 		encoded, err := json.Marshal(payload)
 		if err != nil {
 			return nil, fmt.Errorf("marshal request body: %w", err)
 		}
+		requestBodyBytes = encoded
 		requestBody = bytes.NewReader(encoded)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, method, endpointURL.String(), requestBody)
+	requestURL := endpointURL.String()
+	started := time.Now()
+
+	tflog.Debug(ctx, "tensordock api request", map[string]any{
+		"method":        method,
+		"url":           requestURL,
+		"request_bytes": len(requestBodyBytes),
+		"has_payload":   payload != nil,
+	})
+	if payload != nil {
+		tflog.Trace(ctx, "tensordock api request body", map[string]any{
+			"method": method,
+			"url":    requestURL,
+			"body":   string(requestBodyBytes),
+		})
+	}
+
+	req, err := http.NewRequestWithContext(ctx, method, requestURL, requestBody)
 	if err != nil {
+		tflog.Debug(ctx, "tensordock api request build failed", map[string]any{
+			"method": method,
+			"url":    requestURL,
+			"error":  err.Error(),
+		})
 		return nil, fmt.Errorf("build request: %w", err)
 	}
 
@@ -540,14 +564,44 @@ func (c *Client) doJSON(ctx context.Context, method, endpoint string, payload an
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
+		tflog.Debug(ctx, "tensordock api transport failed", map[string]any{
+			"method":        method,
+			"url":           requestURL,
+			"elapsed_ms":    time.Since(started).Milliseconds(),
+			"request_bytes": len(requestBodyBytes),
+			"error":         err.Error(),
+		})
 		return nil, fmt.Errorf("execute request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
+		tflog.Debug(ctx, "tensordock api response read failed", map[string]any{
+			"method":        method,
+			"url":           requestURL,
+			"status_code":   resp.StatusCode,
+			"elapsed_ms":    time.Since(started).Milliseconds(),
+			"request_bytes": len(requestBodyBytes),
+			"error":         err.Error(),
+		})
 		return nil, fmt.Errorf("read response body: %w", err)
 	}
+
+	tflog.Debug(ctx, "tensordock api response", map[string]any{
+		"method":         method,
+		"url":            requestURL,
+		"status_code":    resp.StatusCode,
+		"elapsed_ms":     time.Since(started).Milliseconds(),
+		"request_bytes":  len(requestBodyBytes),
+		"response_bytes": len(body),
+	})
+	tflog.Trace(ctx, "tensordock api response body", map[string]any{
+		"method":      method,
+		"url":         requestURL,
+		"status_code": resp.StatusCode,
+		"body":        string(body),
+	})
 
 	if resp.StatusCode == http.StatusNotFound {
 		return nil, ErrNotFound
@@ -557,6 +611,58 @@ func (c *Client) doJSON(ctx context.Context, method, endpoint string, payload an
 	}
 
 	return body, nil
+}
+
+func decodeCreateInstanceResponse(body []byte) (Instance, error) {
+	instance, err := decodeInstance(body)
+	if err == nil && instance.ID != "" {
+		return instance, nil
+	}
+
+	var wrapped struct {
+		Data struct {
+			ID     string `json:"id"`
+			Name   string `json:"name"`
+			Status string `json:"status"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &wrapped); err == nil && wrapped.Data.ID != "" {
+		return Instance{
+			ID:     wrapped.Data.ID,
+			Name:   wrapped.Data.Name,
+			Status: wrapped.Data.Status,
+		}, nil
+	}
+
+	return Instance{}, fmt.Errorf("decode create instance response: missing instance ID")
+}
+
+func apiErrorFromBody(raw []byte) error {
+	if len(raw) == 0 {
+		return nil
+	}
+
+	var payload apiBodyErrorPayload
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return nil
+	}
+
+	message := strings.TrimSpace(payload.Error)
+	if message == "" {
+		message = strings.TrimSpace(payload.Message)
+	}
+	if message == "" {
+		return nil
+	}
+
+	if payload.Status >= 400 || payload.Error != "" {
+		if payload.Status > 0 {
+			return fmt.Errorf("TensorDock API reported status %d: %s", payload.Status, message)
+		}
+		return errors.New(message)
+	}
+
+	return nil
 }
 
 func decodeInstance(body []byte) (Instance, error) {
